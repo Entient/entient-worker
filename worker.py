@@ -2,7 +2,9 @@
 """Entient Remote Worker — claims and executes jobs from coordinator.
 
 Usage:
-    python worker.py                    # start with config.json
+    python worker.py                    # start with config.json (auto-detect caps)
+    python worker.py --check            # check what this machine can run
+    python worker.py --bootstrap        # download DBs from coordinator
     python worker.py --url http://IP:8420 --name my-pc   # override
 """
 import json
@@ -17,6 +19,72 @@ from pathlib import Path
 import requests
 
 CONFIG_FILE = Path(__file__).parent / "config.json"
+DATA_DIR = Path(os.path.expanduser("~/.entient/v2"))
+BANK_DIR = Path(os.path.expanduser("~/.entient/bank"))
+FORWARDS_DIR = Path(os.path.expanduser("~/.entient/forwards"))
+
+
+def bootstrap_from_coordinator(coordinator_url):
+    """Download database files from the coordinator to enable more capabilities."""
+    url = coordinator_url.rstrip("/")
+    print(f"Bootstrapping from {url}...")
+
+    # Check what's available
+    try:
+        resp = requests.get(f"{url}/bootstrap", timeout=10)
+        available = resp.json()
+    except Exception as e:
+        print(f"[!] Cannot reach coordinator: {e}")
+        return
+
+    print(f"  Coordinator has: {list(available.get('files', {}).keys())}")
+    print(f"  Bank operators: {available.get('bank_operators', 0)}")
+
+    # Download each file we don't have
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    FORWARDS_DIR.mkdir(parents=True, exist_ok=True)
+
+    targets = {
+        "outcome_ledger.db": DATA_DIR / "outcome_ledger.db",
+        "genome_registry.db": DATA_DIR / "genome_registry.db",
+        "forwards.jsonl": FORWARDS_DIR / "forwards.jsonl",
+        # shapes.db intentionally excluded — too large (5+ GB) for download
+        # Use: python worker.py --bootstrap --include-shapes to override
+    }
+
+    for filename, dest in targets.items():
+        if filename not in available.get("files", {}):
+            print(f"  {filename}: not available on coordinator")
+            continue
+        info = available["files"][filename]
+        if dest.exists():
+            local_size = dest.stat().st_size
+            remote_size = info["size_bytes"]
+            if abs(local_size - remote_size) < 1024:  # within 1KB
+                print(f"  {filename}: up to date ({info['size_mb']} MB)")
+                continue
+            print(f"  {filename}: local {local_size/1024/1024:.1f} MB vs remote {info['size_mb']} MB — updating")
+        else:
+            print(f"  {filename}: downloading ({info['size_mb']} MB)...")
+
+        try:
+            resp = requests.get(f"{url}/bootstrap/{filename}", timeout=300, stream=True)
+            resp.raise_for_status()
+            with open(dest, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            print(f"  {filename}: OK ({dest.stat().st_size / 1024 / 1024:.1f} MB)")
+        except Exception as e:
+            print(f"  {filename}: FAILED ({e})")
+
+    # Note about shapes.db
+    shapes = DATA_DIR / "shapes.db"
+    if not shapes.exists():
+        shapes_info = available.get("files", {}).get("shapes.db")
+        if shapes_info:
+            print(f"\n  NOTE: shapes.db ({shapes_info['size_mb']} MB) is too large for HTTP download.")
+            print(f"  Copy it manually: scp coordinator:~/.entient/v2/shapes.db {shapes}")
+            print(f"  Or use a USB drive. This unlocks the CROSSINDEX capability.")
 
 
 def load_config():
@@ -190,13 +258,40 @@ def main():
     parser.add_argument("--url", help="Coordinator URL")
     parser.add_argument("--name", help="Worker name")
     parser.add_argument("--caps", nargs="+", default=None,
-                        help="Capabilities: compile mine retrain crossindex")
+                        help="Override capabilities (default: auto-detect)")
+    parser.add_argument("--check", action="store_true",
+                        help="Check capabilities and exit (no connection)")
+    parser.add_argument("--bootstrap", action="store_true",
+                        help="Download DB files from coordinator to unlock more capabilities")
     args = parser.parse_args()
 
+    # Auto-detect capabilities
+    from job_handlers import detect_capabilities, print_capability_report
+
+    if args.check:
+        print_capability_report()
+        return
+
     config = load_config()
+
+    if args.bootstrap:
+        url = args.url or config.get("coordinator_url", "http://localhost:8420")
+        bootstrap_from_coordinator(url)
+        print("\nRe-checking capabilities after bootstrap:")
+        print_capability_report()
+        return
+
+
     url = args.url or config.get("coordinator_url", "http://localhost:8420")
     name = args.name or config.get("worker_name", socket.gethostname())
-    caps = args.caps or config.get("capabilities", ["compile", "mine", "retrain"])
+
+    if args.caps:
+        caps = args.caps
+    else:
+        caps, missing = detect_capabilities()
+        print(f"Auto-detected capabilities: {caps}")
+        if missing:
+            print(f"  ({len(missing)} job types unavailable — run --check for details)")
 
     worker = Worker(url, name, caps)
 

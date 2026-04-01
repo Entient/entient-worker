@@ -5,6 +5,7 @@ Each handler receives (spec, job_id) and returns (result_dict, [files_to_upload]
 """
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -16,7 +17,127 @@ WORKER_DIR = Path(__file__).parent
 REPOS_DIR = WORKER_DIR / "repos"
 INTERCEPTOR_DIR = REPOS_DIR / "entient-interceptor"
 AGENT_DIR = REPOS_DIR / "entient-agents"
+ENTIENT_DIR = REPOS_DIR / "entient"
 BANK_DIR = Path(os.path.expanduser("~/.entient/bank"))
+DATA_DIR = Path(os.path.expanduser("~/.entient/v2"))
+FORWARDS_DIR = Path(os.path.expanduser("~/.entient/forwards"))
+
+
+# ── Capability Detection ──────────────────────────────────────────
+
+def detect_capabilities():
+    """Auto-detect what this machine can run based on available repos, DBs, and packages."""
+    caps = ["compile"]  # Always available (stdlib only)
+    missing = []
+
+    # COVERAGE: needs outcome_ledger.db (no repo imports needed)
+    ledger = DATA_DIR / "outcome_ledger.db"
+    if ledger.exists():
+        try:
+            conn = sqlite3.connect(str(ledger))
+            count = conn.execute("SELECT COUNT(*) FROM outcomes").fetchone()[0]
+            conn.close()
+            if count > 0:
+                caps.append("coverage")
+            else:
+                missing.append("coverage: outcome_ledger.db is empty")
+        except Exception as e:
+            missing.append(f"coverage: outcome_ledger.db unreadable ({e})")
+    else:
+        missing.append(f"coverage: {ledger} not found")
+
+    # CROSSINDEX: needs shapes.db + genome_registry.db (no repo imports)
+    shapes = DATA_DIR / "shapes.db"
+    genomes = DATA_DIR / "genome_registry.db"
+    if shapes.exists() and genomes.exists():
+        try:
+            conn = sqlite3.connect(str(shapes))
+            sc = conn.execute("SELECT COUNT(*) FROM shapes").fetchone()[0]
+            conn.close()
+            if sc > 0:
+                caps.append("crossindex")
+            else:
+                missing.append("crossindex: shapes.db is empty")
+        except Exception as e:
+            missing.append(f"crossindex: shapes.db unreadable ({e})")
+    else:
+        if not shapes.exists():
+            missing.append(f"crossindex: {shapes} not found")
+        if not genomes.exists():
+            missing.append(f"crossindex: {genomes} not found")
+
+    # MINE: needs entient-agent repo installed
+    if AGENT_DIR.exists() and (AGENT_DIR / "entient_agent").exists():
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c", "from entient_agent.probe.engine import ProbeEngine"],
+                capture_output=True, timeout=10)
+            if result.returncode == 0:
+                caps.append("mine")
+            else:
+                missing.append(f"mine: entient_agent import failed")
+        except Exception as e:
+            missing.append(f"mine: import check error ({e})")
+    else:
+        missing.append(f"mine: {AGENT_DIR / 'entient_agent'} not found")
+
+    # RETRAIN: needs entient-interceptor installed + outcome_ledger.db + bank ops
+    train_script = INTERCEPTOR_DIR / "tools" / "train_from_outcomes.py"
+    if train_script.exists() and ledger.exists():
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c", "from entient_interceptor.weight_layer import LogisticRouter"],
+                capture_output=True, timeout=10)
+            if result.returncode == 0:
+                bank_count = len(list(BANK_DIR.glob("op_*.py"))) if BANK_DIR.exists() else 0
+                if bank_count > 0:
+                    caps.append("retrain")
+                else:
+                    missing.append(f"retrain: bank is empty ({BANK_DIR})")
+            else:
+                missing.append("retrain: entient_interceptor import failed")
+        except Exception as e:
+            missing.append(f"retrain: import check error ({e})")
+    else:
+        if not train_script.exists():
+            missing.append(f"retrain: {train_script} not found")
+        if not ledger.exists():
+            missing.append(f"retrain: outcome_ledger.db not found")
+
+    return caps, missing
+
+
+def print_capability_report():
+    """Print a human-readable capability report."""
+    caps, missing = detect_capabilities()
+    print("\n  CAPABILITY DETECTION")
+    print("  " + "=" * 40)
+    print(f"  Available: {', '.join(caps)}")
+    if missing:
+        print(f"\n  Not available ({len(missing)}):")
+        for m in missing:
+            print(f"    - {m}")
+    print()
+
+    # Show data file sizes
+    print("  DATA FILES:")
+    for label, path in [
+        ("outcome_ledger.db", DATA_DIR / "outcome_ledger.db"),
+        ("shapes.db", DATA_DIR / "shapes.db"),
+        ("genome_registry.db", DATA_DIR / "genome_registry.db"),
+        ("forwards.jsonl", FORWARDS_DIR / "forwards.jsonl"),
+        ("bank operators", BANK_DIR),
+    ]:
+        if path.is_dir():
+            count = len(list(path.glob("op_*.py"))) if path.exists() else 0
+            print(f"    {label}: {count} files")
+        elif path.exists():
+            size_mb = path.stat().st_size / 1024 / 1024
+            print(f"    {label}: {size_mb:.1f} MB")
+        else:
+            print(f"    {label}: NOT FOUND")
+    print()
+    return caps
 
 
 # ── COMPILE: run op_factory with JSON specs ───────────────────────
