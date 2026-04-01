@@ -33,51 +33,75 @@ WORKER_NAME=${WORKER_NAME:-$(hostname)}
 
 # Create venv
 echo ""
-echo "[1/5] Creating virtual environment..."
+echo "[1/6] Creating virtual environment..."
 python3 -m venv .venv
 source .venv/bin/activate
 
-# Install requests
-echo "[2/5] Installing dependencies..."
-pip install requests -q
+# Install Python packages
+echo "[2/6] Installing Python packages..."
+pip install requests pynacl cryptography cbor2 pyyaml -q
 
-# Clone repos
-echo "[3/5] Cloning repositories..."
+# Clone repos (all 3 needed for full capability)
+echo "[3/6] Cloning repositories..."
 mkdir -p repos
 
-if [ ! -d "repos/entient-interceptor" ]; then
-    git clone https://github.com/Entient/entient-interceptor.git repos/entient-interceptor
+if [ ! -d "repos/entient" ]; then
+    echo "      Cloning entient (core)..."
+    git clone https://github.com/Entient/entient.git repos/entient
 else
-    echo "      entient-interceptor already cloned, pulling latest..."
-    cd repos/entient-interceptor && git pull && cd ../..
+    echo "      entient already cloned, pulling latest..."
+    cd repos/entient && git pull && cd ../..
 fi
 
 if [ ! -d "repos/entient-agents" ]; then
+    echo "      Cloning entient-agents..."
     git clone https://github.com/Entient/entient-agents.git repos/entient-agents
 else
     echo "      entient-agents already cloned, pulling latest..."
     cd repos/entient-agents && git pull && cd ../..
 fi
 
-# Install repo deps
-echo "[4/5] Installing repo dependencies..."
-pip install -e repos/entient-agents -q 2>/dev/null || true
-pip install -e repos/entient-interceptor -q 2>/dev/null || true
+if [ ! -d "repos/entient-interceptor" ]; then
+    echo "      Cloning entient-interceptor..."
+    git clone https://github.com/Entient/entient-interceptor.git repos/entient-interceptor
+else
+    echo "      entient-interceptor already cloned, pulling latest..."
+    cd repos/entient-interceptor && git pull && cd ../..
+fi
+
+# Install repos in dependency order
+echo "[4/6] Installing repo packages..."
+echo "      Installing entient (core)..."
+pip install -e repos/entient -q || echo "[!] entient install failed"
+echo "      Installing entient-agents..."
+pip install -e repos/entient-agents -q || echo "[!] entient-agents install failed"
+echo "      Installing entient-interceptor..."
+pip install -e repos/entient-interceptor -q || echo "[!] entient-interceptor install failed"
 
 # Write config
-echo "[5/5] Writing config..."
+echo "[5/6] Writing config..."
 cat > config.json << EOF
 {
   "coordinator_url": "$COORD_URL",
   "worker_name": "$WORKER_NAME",
-  "capabilities": ["compile", "mine", "retrain", "crossindex", "coverage"],
+  "capabilities": "auto",
   "poll_interval": 10,
   "heartbeat_interval": 60
 }
 EOF
 
-# Create bank dir
+# Create data dirs
+echo "[6/6] Creating data directories..."
 mkdir -p ~/.entient/bank
+mkdir -p ~/.entient/v2
+mkdir -p ~/.entient/weights
+mkdir -p ~/.entient/forwards
+
+# Check capabilities
+echo ""
+echo "  Checking what this machine can run..."
+echo ""
+python3 worker.py --check
 
 echo ""
 echo "  ============================================"
@@ -86,6 +110,12 @@ echo ""
 echo "   Coordinator: $COORD_URL"
 echo "   Worker name: $WORKER_NAME"
 echo ""
-echo "   To start: ./start.sh"
+echo "   NEXT STEPS:"
+echo "   1. Run: ./start.sh --bootstrap"
+echo "      (Downloads DBs from coordinator)"
+echo "   2. Then: ./start.sh"
+echo "      (Starts the worker)"
+echo "   3. For CROSSINDEX: copy shapes.db (5GB) via USB to"
+echo "      ~/.entient/v2/shapes.db"
 echo "  ============================================"
 echo ""

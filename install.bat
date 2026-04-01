@@ -37,7 +37,7 @@ if "!WORKER_NAME!"=="" set WORKER_NAME=%COMPUTERNAME%
 
 :: Create virtual environment
 echo.
-echo [1/5] Creating virtual environment...
+echo [1/6] Creating virtual environment...
 python -m venv .venv
 if errorlevel 1 (
     echo [X] Failed to create venv
@@ -45,47 +45,83 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: Install requests
-echo [2/5] Installing dependencies...
-.venv\Scripts\pip install requests -q
+:: Install Python packages
+echo [2/6] Installing Python packages...
+.venv\Scripts\pip install requests pynacl cryptography cbor2 pyyaml -q
+if errorlevel 1 (
+    echo [!] Some packages failed to install. Continuing...
+)
 
-:: Clone repos
-echo [3/5] Cloning repositories...
+:: Clone repos (all 3 needed for full capability)
+echo [3/6] Cloning repositories...
 if not exist repos mkdir repos
 
-if not exist repos\entient-interceptor (
-    git clone https://github.com/Entient/entient-interceptor.git repos/entient-interceptor
+if not exist repos\entient (
+    echo       Cloning entient (core)...
+    git clone https://github.com/Entient/entient.git repos/entient
 ) else (
-    echo       entient-interceptor already cloned, pulling latest...
-    cd repos\entient-interceptor && git pull && cd ..\..
+    echo       entient already cloned, pulling latest...
+    cd repos\entient && git pull && cd ..\..
 )
 
 if not exist repos\entient-agents (
+    echo       Cloning entient-agents...
     git clone https://github.com/Entient/entient-agents.git repos/entient-agents
 ) else (
     echo       entient-agents already cloned, pulling latest...
     cd repos\entient-agents && git pull && cd ..\..
 )
 
-:: Install repo deps
-echo [4/5] Installing repo dependencies...
-.venv\Scripts\pip install -e repos/entient-agents -q 2>nul
-.venv\Scripts\pip install -e repos/entient-interceptor -q 2>nul
+if not exist repos\entient-interceptor (
+    echo       Cloning entient-interceptor...
+    git clone https://github.com/Entient/entient-interceptor.git repos/entient-interceptor
+) else (
+    echo       entient-interceptor already cloned, pulling latest...
+    cd repos\entient-interceptor && git pull && cd ..\..
+)
+
+:: Install repos in dependency order (entient first, then agent, then interceptor)
+echo [4/6] Installing repo packages...
+echo       Installing entient (core)...
+.venv\Scripts\pip install -e repos/entient -q
+if errorlevel 1 (
+    echo [!] entient install failed — retrain/mine may not work
+)
+echo       Installing entient-agents...
+.venv\Scripts\pip install -e repos/entient-agents -q
+if errorlevel 1 (
+    echo [!] entient-agents install failed — mine may not work
+)
+echo       Installing entient-interceptor...
+.venv\Scripts\pip install -e repos/entient-interceptor -q
+if errorlevel 1 (
+    echo [!] entient-interceptor install failed — retrain may not work
+)
 
 :: Write config
-echo [5/5] Writing config...
+echo [5/6] Writing config...
 (
 echo {
 echo   "coordinator_url": "!COORD_URL!",
 echo   "worker_name": "!WORKER_NAME!",
-echo   "capabilities": ["compile", "mine", "retrain", "crossindex", "coverage"],
+echo   "capabilities": "auto",
 echo   "poll_interval": 10,
 echo   "heartbeat_interval": 60
 echo }
 ) > config.json
 
-:: Create bank dir
+:: Create data dirs
+echo [6/6] Creating data directories...
 if not exist "%USERPROFILE%\.entient\bank" mkdir "%USERPROFILE%\.entient\bank"
+if not exist "%USERPROFILE%\.entient\v2" mkdir "%USERPROFILE%\.entient\v2"
+if not exist "%USERPROFILE%\.entient\weights" mkdir "%USERPROFILE%\.entient\weights"
+if not exist "%USERPROFILE%\.entient\forwards" mkdir "%USERPROFILE%\.entient\forwards"
+
+:: Check capabilities
+echo.
+echo  Checking what this machine can run...
+echo.
+.venv\Scripts\python worker.py --check
 
 echo.
 echo  ============================================
@@ -94,7 +130,13 @@ echo.
 echo   Coordinator: !COORD_URL!
 echo   Worker name: !WORKER_NAME!
 echo.
-echo   To start: double-click start.bat
+echo   NEXT STEPS:
+echo   1. Run: start.bat --bootstrap
+echo      (Downloads DBs from coordinator to unlock more capabilities)
+echo   2. Then: start.bat
+echo      (Starts the worker)
+echo   3. For CROSSINDEX: copy shapes.db (5GB) via USB to
+echo      %USERPROFILE%\.entient\v2\shapes.db
 echo  ============================================
 echo.
 pause
