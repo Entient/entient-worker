@@ -235,9 +235,11 @@ def handle_mine(spec, job_id):
     repo_set_id = spec.get("repo_set_id")
     args = [sys.executable, str(mine_script)]
     if repo_set_id is not None:
-        args.extend(["--sets", str(repo_set_id)])
+        # mine_eye_bulk.py uses a positional subcommand interface:
+        #   python tools/mine_eye_bulk.py sets 2 5 11
+        args.extend(["sets", str(repo_set_id)])
     else:
-        args.append("--all")
+        args.append("all")
 
     result = subprocess.run(
         args, capture_output=True, text=True, timeout=7200,  # 2h max
