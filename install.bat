@@ -57,11 +57,13 @@ echo [3/6] Cloning repositories...
 if not exist repos mkdir repos
 
 if not exist repos\entient (
-    echo       Cloning entient (core)...
+    echo       Cloning entient (core^)...
     git clone https://github.com/Entient/entient.git repos/entient
 ) else (
     echo       entient already cloned, pulling latest...
-    cd repos\entient && git pull && cd ..\..
+    pushd repos\entient
+    git pull
+    popd
 )
 
 if not exist repos\entient-agents (
@@ -69,7 +71,9 @@ if not exist repos\entient-agents (
     git clone https://github.com/Entient/entient-agents.git repos/entient-agents
 ) else (
     echo       entient-agents already cloned, pulling latest...
-    cd repos\entient-agents && git pull && cd ..\..
+    pushd repos\entient-agents
+    git pull
+    popd
 )
 
 if not exist repos\entient-interceptor (
@@ -77,7 +81,9 @@ if not exist repos\entient-interceptor (
     git clone https://github.com/Entient/entient-interceptor.git repos/entient-interceptor
 ) else (
     echo       entient-interceptor already cloned, pulling latest...
-    cd repos\entient-interceptor && git pull && cd ..\..
+    pushd repos\entient-interceptor
+    git pull
+    popd
 )
 
 :: Install repos in dependency order (entient first, then agent, then interceptor)

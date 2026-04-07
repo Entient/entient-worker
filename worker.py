@@ -77,6 +77,23 @@ def bootstrap_from_coordinator(coordinator_url):
         except Exception as e:
             print(f"  {filename}: FAILED ({e})")
 
+    # Download bank operators
+    BANK_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        print(f"\n  Downloading bank operators...")
+        resp = requests.get(f"{url}/bootstrap/bank.tar.gz", timeout=300, stream=True)
+        if resp.status_code == 200:
+            import tarfile, io
+            buf = io.BytesIO(resp.content)
+            with tarfile.open(fileobj=buf, mode="r:gz") as tar:
+                tar.extractall(path=str(BANK_DIR))
+            count = len(list(BANK_DIR.glob("op_*.py")))
+            print(f"  bank: OK ({count} operators)")
+        else:
+            print(f"  bank: server returned {resp.status_code} (upgrade coordinator for bank sync)")
+    except Exception as e:
+        print(f"  bank: FAILED ({e})")
+
     # Note about shapes.db
     shapes = DATA_DIR / "shapes.db"
     if not shapes.exists():

@@ -81,6 +81,14 @@ def detect_capabilities():
     else:
         missing.append(f"mine: {AGENT_DIR / 'entient_agent'} not found")
 
+    # SYNTHESIZE: needs entient-interceptor repo (API key optional — falls back to near_miss_sweep)
+    near_miss_script = INTERCEPTOR_DIR / "tools" / "near_miss_sweep.py"
+    bulk_script = INTERCEPTOR_DIR / "tools" / "bulk_synthesize.py"
+    if near_miss_script.exists() or bulk_script.exists():
+        caps.append("synthesize")
+    else:
+        missing.append(f"synthesize: neither near_miss_sweep.py nor bulk_synthesize.py found in {INTERCEPTOR_DIR / 'tools'}")
+
     # RETRAIN: needs entient-interceptor installed + outcome_ledger.db + bank ops
     train_script = INTERCEPTOR_DIR / "tools" / "train_from_outcomes.py"
     if train_script.exists() and ledger.exists():
@@ -339,6 +347,69 @@ def handle_coverage(spec, job_id):
     }, []
 
 
+# ── SYNTHESIZE: generate operators via bulk_synthesize or near_miss_sweep ──
+
+def handle_synthesize(spec, job_id):
+    """Generate new operators. Uses bulk_synthesize.py if API key available,
+    falls back to near_miss_sweep.py (no API key needed)."""
+    count = spec.get("count", 10) if spec else 10
+    cluster = spec.get("cluster") if spec else None
+
+    bank_before = len(list(BANK_DIR.glob("op_*.py"))) if BANK_DIR.exists() else 0
+
+    # --- Path 1: bulk_synthesize.py (needs API key) ---
+    bulk_script = INTERCEPTOR_DIR / "tools" / "bulk_synthesize.py"
+    has_api_key = any(os.environ.get(k) for k in (
+        "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "LIGHTNING_API_KEY"
+    ))
+
+    if bulk_script.exists() and has_api_key:
+        args = [sys.executable, str(bulk_script), "--count", str(count)]
+        if cluster:
+            args.extend(["--cluster", cluster])
+        result = subprocess.run(
+            args, capture_output=True, text=True, timeout=900,
+            cwd=str(INTERCEPTOR_DIR),
+        )
+        print(result.stdout[-2000:] if len(result.stdout) > 2000 else result.stdout)
+        if result.stderr:
+            print(result.stderr[-500:])
+        path = "bulk_synthesize"
+    else:
+        # --- Path 2: near_miss_sweep.py (no API key, uses local bank + forwards) ---
+        sweep_script = INTERCEPTOR_DIR / "tools" / "near_miss_sweep.py"
+        if not sweep_script.exists():
+            raise FileNotFoundError(f"Neither bulk_synthesize.py nor near_miss_sweep.py found in {INTERCEPTOR_DIR / 'tools'}")
+        top = max(3, count // 2)
+        args = [sys.executable, str(sweep_script), "--top", str(top), "--compile"]
+        result = subprocess.run(
+            args, capture_output=True, text=True, timeout=600,
+            cwd=str(INTERCEPTOR_DIR),
+        )
+        print(result.stdout[-2000:] if len(result.stdout) > 2000 else result.stdout)
+        if result.stderr:
+            print(result.stderr[-500:])
+        path = "near_miss_sweep"
+
+    bank_after = len(list(BANK_DIR.glob("op_*.py"))) if BANK_DIR.exists() else 0
+    new_ops = bank_after - bank_before
+
+    # Upload any newly created operator files (up to 50)
+    files = []
+    if new_ops > 0 and BANK_DIR.exists():
+        all_ops = sorted(BANK_DIR.glob("op_*.py"), key=lambda p: p.stat().st_mtime, reverse=True)
+        files = all_ops[:min(new_ops, 50)]
+
+    return {
+        "path": path,
+        "exit_code": result.returncode,
+        "bank_before": bank_before,
+        "bank_after": bank_after,
+        "new_operators": new_ops,
+        "output_tail": result.stdout[-300:],
+    }, files
+
+
 # ── Handler Registry ──────────────────────────────────────────────
 
 HANDLERS = {
@@ -347,4 +418,5 @@ HANDLERS = {
     "retrain": handle_retrain,
     "crossindex": handle_crossindex,
     "coverage": handle_coverage,
+    "synthesize": handle_synthesize,
 }
