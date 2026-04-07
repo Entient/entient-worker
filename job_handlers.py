@@ -363,10 +363,25 @@ def handle_synthesize(spec, job_id):
         "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "LIGHTNING_API_KEY"
     ))
 
-    if bulk_script.exists() and has_api_key:
+    # Detect Ollama as local fallback (OpenAI-compatible at localhost:11434)
+    has_ollama = False
+    ollama_model = "qwen2.5-coder:7b"
+    try:
+        import urllib.request
+        urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2)
+        has_ollama = True
+    except Exception:
+        pass
+
+    sweep_script = INTERCEPTOR_DIR / "tools" / "near_miss_sweep.py"
+
+    if bulk_script.exists() and (has_api_key or has_ollama):
         args = [sys.executable, str(bulk_script), "--count", str(count)]
         if cluster:
             args.extend(["--cluster", cluster])
+        if not has_api_key and has_ollama:
+            # Use local Ollama model (free, no API key needed)
+            args.extend(["--ollama", ollama_model])
         result = subprocess.run(
             args, capture_output=True, text=True, timeout=900,
             cwd=str(INTERCEPTOR_DIR),
@@ -374,12 +389,9 @@ def handle_synthesize(spec, job_id):
         print(result.stdout[-2000:] if len(result.stdout) > 2000 else result.stdout)
         if result.stderr:
             print(result.stderr[-500:])
-        path = "bulk_synthesize"
-    else:
+        path = "bulk_synthesize" + ("_ollama" if not has_api_key else "")
+    elif sweep_script.exists():
         # --- Path 2: near_miss_sweep.py (no API key, uses local bank + forwards) ---
-        sweep_script = INTERCEPTOR_DIR / "tools" / "near_miss_sweep.py"
-        if not sweep_script.exists():
-            raise FileNotFoundError(f"Neither bulk_synthesize.py nor near_miss_sweep.py found in {INTERCEPTOR_DIR / 'tools'}")
         top = max(3, count // 2)
         args = [sys.executable, str(sweep_script), "--top", str(top), "--compile"]
         result = subprocess.run(
@@ -390,6 +402,11 @@ def handle_synthesize(spec, job_id):
         if result.stderr:
             print(result.stderr[-500:])
         path = "near_miss_sweep"
+    else:
+        raise FileNotFoundError(
+            f"No synthesize path available: bulk_synthesize.py needs API key or Ollama, "
+            f"near_miss_sweep.py not found in {INTERCEPTOR_DIR / 'tools'}"
+        )
 
     bank_after = len(list(BANK_DIR.glob("op_*.py"))) if BANK_DIR.exists() else 0
     new_ops = bank_after - bank_before
