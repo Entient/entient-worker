@@ -354,6 +354,7 @@ def handle_synthesize(spec, job_id):
     falls back to near_miss_sweep.py (no API key needed)."""
     count = spec.get("count", 10) if spec else 10
     cluster = spec.get("cluster") if spec else None
+    model = spec.get("model") if spec else None
 
     bank_before = len(list(BANK_DIR.glob("op_*.py"))) if BANK_DIR.exists() else 0
 
@@ -379,9 +380,16 @@ def handle_synthesize(spec, job_id):
         args = [sys.executable, str(bulk_script), "--count", str(count)]
         if cluster:
             args.extend(["--cluster", cluster])
-        if not has_api_key and has_ollama:
+        if has_api_key:
+            if model and model not in ("haiku", None):
+                args.extend(["--model", model])
+            elif model == "haiku":
+                pass  # haiku is default, no flag needed
+        elif has_ollama:
             # Use local Ollama model (free, no API key needed)
             args.extend(["--ollama", ollama_model])
+        if spec and spec.get("quality"):
+            args.append("--overwrite")
         result = subprocess.run(
             args, capture_output=True, text=True, timeout=900,
             cwd=str(INTERCEPTOR_DIR),
