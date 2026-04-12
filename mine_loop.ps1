@@ -45,7 +45,7 @@ while ($true) {
     $PID | Out-File $LOCKFILE -Encoding ascii
 
     try {
-        & $PYTHON -W ignore::SyntaxWarning "$INTERCEPTOR\tools\mine_eye_bulk.py" all --parallel --db $HARVEST_DB
+        & $PYTHON -W ignore::SyntaxWarning "$INTERCEPTOR\tools\mine_eye_bulk.py" --db $HARVEST_DB all --parallel
         $exit = $LASTEXITCODE
         Log "Round ${round} done (exit=$exit). Pausing 30s..."
     } catch {
