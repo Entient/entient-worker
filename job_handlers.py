@@ -257,17 +257,36 @@ def handle_mine(spec, job_id):
     if result.returncode != 0 and result.stderr:
         print(f"STDERR: {result.stderr[-1000:]}")
 
-    # Check for harvest DB
-    files = []
-    harvest = AGENT_DIR / "pretrain_harvest.db"
-    if harvest.exists():
-        files.append(harvest)
+    # Run OperatorCompiler to promote new fingerprints locally
+    # (Don't upload the raw DB — nothing consumes it on coordinator)
+    promotions = 0
+    compiler_script = AGENT_DIR / "tools" / "operator_compiler.py"
+    harvest_db = Path("E:/entient/repos/pretrain_harvest.db")
+    if not harvest_db.exists():
+        harvest_db = AGENT_DIR / "pretrain_harvest.db"
+    if compiler_script.exists() and harvest_db.exists():
+        comp_result = subprocess.run(
+            [sys.executable, str(compiler_script), "--db", str(harvest_db),
+             "--promote", "--top", "200"],
+            capture_output=True, text=True, timeout=300,
+            cwd=str(AGENT_DIR),
+        )
+        # Parse promotion count from output
+        for line in comp_result.stdout.splitlines():
+            if "Written:" in line or "written:" in line:
+                try:
+                    promotions = int(line.split()[-1])
+                except (ValueError, IndexError):
+                    pass
+        if comp_result.returncode != 0:
+            print(f"OperatorCompiler stderr: {comp_result.stderr[-500:]}")
 
     return {
         "repo_set_id": repo_set_id,
         "exit_code": result.returncode,
         "output_tail": result.stdout[-500:],
-    }, files
+        "promotions": promotions,
+    }, []   # empty files list — no DB upload
 
 
 # ── RETRAIN: retrain router weights from outcomes ─────────────────
@@ -386,7 +405,6 @@ def handle_synthesize(spec, job_id):
             elif model == "haiku":
                 pass  # haiku is default, no flag needed
         elif has_ollama:
-            # Use local Ollama model (free, no API key needed)
             args.extend(["--ollama", ollama_model])
         if spec and spec.get("quality"):
             args.append("--overwrite")

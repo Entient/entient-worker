@@ -97,6 +97,80 @@ if ($freeGB -lt 3) {
     Log "Mine loop paused until disk is recovered."
 }
 
+# Pipeline health checks
+$harvestDb = "E:\entient\repos\pretrain_harvest.db"
+if (Test-Path $harvestDb) {
+    $harvestGB = [math]::Round((Get-Item $harvestDb).Length / 1GB, 2)
+    Log "Harvest DB: $harvestGB GB"
+    if ($harvestGB -gt 2.0) {
+        Log "WARNING: Harvest DB over 2GB — running OperatorCompiler drain..."
+        & $PYTHON "C:\entient-worker\repos\entient-agents\tools\operator_compiler.py" `
+            --db $harvestDb --promote --top 200
+        Log "OperatorCompiler done (exit=$LASTEXITCODE)"
+    }
+}
+
+# B. Promotion zero-output check
+$promotionCheckFile = "C:\Users\Brock\.entient\v2\last_promotion_check.json"
+$bankDir = "C:\Users\Brock\.entient\bank"
+$currentBankCount = (Get-ChildItem $bankDir -Filter "op_*.py" -ErrorAction SilentlyContinue).Count
+
+if (Test-Path $promotionCheckFile) {
+    try {
+        $promotionState = Get-Content $promotionCheckFile -Raw | ConvertFrom-Json
+        $lastCheck = [datetime]::Parse($promotionState.last_check)
+        $lastBankCount = $promotionState.bank_count
+        $zeroRunCount = $promotionState.zero_run_count
+        $hoursSinceCheck = ([datetime]::UtcNow - $lastCheck).TotalHours
+
+        if ($currentBankCount -gt $lastBankCount) {
+            $zeroRunCount = 0
+            Log "Bank growth: $lastBankCount -> $currentBankCount ops. Resetting zero_run_count."
+        } elseif ($hoursSinceCheck -gt 2) {
+            $zeroRunCount++
+            Log "No new bank ops since last check ($hoursSinceCheck h ago). zero_run_count=$zeroRunCount"
+        }
+
+        if ($zeroRunCount -ge 3) {
+            Log "STALE: No new operators in 6h — restarting synth loop"
+            Get-WmiObject Win32_Process -Filter "Name='powershell.exe'" |
+                Where-Object { $_.CommandLine -like "*synth_loop*" } |
+                ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+            Start-Sleep -Seconds 2
+            Start-Loop "synth_loop.ps1" "synth_loop (stale restart)"
+            $zeroRunCount = 0
+        }
+    } catch {
+        Log "Could not parse promotion check file: $_ — reinitializing."
+        $zeroRunCount = 0
+    }
+} else {
+    $zeroRunCount = 0
+    Log "Initializing promotion check state file."
+}
+
+$promotionStateNew = [PSCustomObject]@{
+    last_check     = ([datetime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss"))
+    bank_count     = $currentBankCount
+    zero_run_count = $zeroRunCount
+}
+$promotionStateNew | ConvertTo-Json | Set-Content $promotionCheckFile
+
+# C. worker_results dead queue check
+$workerResults = "C:\Users\Brock\.entient\v2\worker_results"
+if (Test-Path $workerResults) {
+    $totalGB = [math]::Round((Get-ChildItem $workerResults -Recurse -ErrorAction SilentlyContinue |
+        Measure-Object -Property Length -Sum).Sum / 1GB, 2)
+    if ($totalGB -gt 5) {
+        Log "WARNING: worker_results is $totalGB GB — unconsumed uploads. Running cleanup..."
+        Get-ChildItem $workerResults -Directory |
+            Sort-Object LastWriteTime | Select-Object -SkipLast 1 |
+            ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue; Log "  Removed $($_.Name)" }
+    } else {
+        Log "worker_results: $totalGB GB OK"
+    }
+}
+
 # 1. Worker - kill duplicates, restart if dead
 Kill-Duplicates "worker.py" "worker"
 if (-not (Is-PythonRunning "worker.py")) {
