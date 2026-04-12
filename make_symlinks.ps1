@@ -2,8 +2,9 @@
 # Run as: Start-Process powershell -Verb RunAs -ArgumentList "-File C:\entient-worker\make_symlinks.ps1"
 
 $links = @(
-    @{ Link = 'C:\Users\Brock\.entient\v2\shapes.db';      Target = 'E:\entient\v2\shapes.db' },
-    @{ Link = 'C:\Users\Brock\.entient\v2\shape_index.db'; Target = 'E:\entient\v2\shape_index.db' }
+    @{ Link = 'C:\Users\Brock\.entient\v2\shapes.db';                          Target = 'E:\entient\v2\shapes.db' },
+    @{ Link = 'C:\Users\Brock\.entient\v2\shape_index.db';                     Target = 'E:\entient\v2\shape_index.db' },
+    @{ Link = 'C:\entient-worker\repos\entient-agents\pretrain_harvest.db';     Target = 'E:\entient\repos\pretrain_harvest.db' }
 )
 
 foreach ($l in $links) {

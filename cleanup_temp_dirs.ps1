@@ -86,6 +86,24 @@ Get-ChildItem "C:\entient-worker\repos\entient-interceptor" -Filter "bulk_specs_
         else { Remove-Item $_.FullName -Force; Log "  Removed $($_.Name) ($mb MB)" }
     }
 
+# --- worker_results/ per-job upload dirs ---
+# Each job drops a full pretrain_harvest.db snapshot (~2-3 GB) here after upload.
+# Once ingested by coordinator they are redundant. Keep nothing older than MaxAgeDays.
+Log "Worker result dirs..."
+$workerResultsRoot = "C:\Users\Brock\.entient\v2\worker_results"
+if (Test-Path $workerResultsRoot) {
+    Get-ChildItem $workerResultsRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -lt $CutoffDate } |
+        ForEach-Object {
+            $mb = [math]::Round((Get-ChildItem $_.FullName -Recurse -ErrorAction SilentlyContinue |
+                Measure-Object -Property Length -Sum).Sum / 1MB, 1)
+            if ($DryRun) { Log "  [DRY RUN] $($_.Name) ($mb MB)" }
+            else { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue; Log "  Removed worker_results/$($_.Name) ($mb MB)" }
+        }
+} else {
+    Log "  worker_results not found, skipping"
+}
+
 # --- Claude temp output files ---
 Log "Claude temp outputs..."
 Remove-Dir "C:\Users\Brock\AppData\Local\Temp\claude" "Claude temp outputs"
